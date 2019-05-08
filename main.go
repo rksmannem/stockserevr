@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -16,11 +17,17 @@ import (
 const destURL = "http://worldtradingdata.com/api/v1/stock"
 const apiToken = "uQUdb9DzzEM6APol77hf9W9FVIuVvac9peGC8geLa6qMcJv18FdDw9NLAoKp"
 
-// MyHandler ....
-func MyHandler(w http.ResponseWriter, r *http.Request) {
+var jsonResponseFields = []string{"symbol", "name",
+	"price", "close_yesterday", "currency", "market_cap", "volume",
+	"timezone", "timezone_name", "gmt_offset", "last_trade_time"}
+
+func stockExchngHndlr(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	// stockExchange := r.URL.Query().Get("stock_exchange")
-	// log.Println("stockExchange : ", stockExchange)
+	stockExchanges := r.URL.Query().Get("stock_exchange")
+	if stockExchanges == "" {
+		stockExchanges = "AMEX"
+	}
+	exchngQueryParamsList := strings.Split(stockExchanges, ",")
 
 	req, err := http.NewRequest("GET", destURL, nil)
 	if err != nil {
@@ -52,100 +59,64 @@ func MyHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal(err)
 	}
 
-	// responseString := string(responseData)
-	// fmt.Fprint(w, responseString)
+	decodedData := decodeNTransformJSON(responseData)
 
-	stkData := decodeNTransformJSON(responseData)
-	fmt.Fprint(w, string(stkData))
+	var jsonResp []byte
+	out := make(map[string]map[string]interface{})
+	for exchngName, resp := range decodedData {
+		if Find(exchngQueryParamsList, exchngName) {
+			out[exchngName] = resp
+			stkData := encodeMapData(out)
+			jsonResp = append(jsonResp, stkData...)
+		}
+	}
+
+	if len(jsonResp) == 0 {
+		jsonResp = []byte(fmt.Sprintf("symbol:%s not found in stock exchanges:%v", vars["symbol"], exchngQueryParamsList))
+	}
+	fmt.Fprint(w, string(jsonResp))
 }
 
-func main() {
-	mux := mux.NewRouter()
-	mux.HandleFunc("/stock/{symbol}", MyHandler).Methods("GET")
-
-	log.Fatal(http.ListenAndServe(":8000", mux))
-}
-
-type internalResp struct {
-	symbol          string
-	name            string
-	price           string
-	close_yesterday string
-	currency        string
-	market_cap      string
-	volume          string
-	timezone        string
-	timezone_name   string
-	gmt_offset      string
-	last_trade_time string
-}
-
-// respDaataOutPut ...
-type respDataOutPut struct {
-	data map[string]internalResp
-}
-
-func decodeNTransformJSON(jsonData []byte) []byte {
+func decodeNTransformJSON(jsonData []byte) map[string]map[string]interface{} {
 	var out interface{}
 	err := json.Unmarshal(jsonData, &out)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
-	tmpData := out.(map[string]interface{})
 
-	// var respOut map[string]interface{}
-	// var internalData internalResp
-
-	// respOut := make(map[string]interface{})
-
-	var respOut respDataOutPut
-	for _, v := range tmpData {
+	respOut := make(map[string]map[string]interface{})
+	for _, v := range out.(map[string]interface{}) {
 		switch v := v.(type) {
 		case []interface{}:
 			for _, u := range v {
 				out := u.(map[string]interface{})
-				exchangeName := out["stock_exchange_short"].(string)
-				// respOut[exchangeName] = internalResp{
-				// 	symbol:          out["symbol"].(string),
-				// 	name:            out["name"].(string),
-				// 	price:           out["price"].(string),
-				// 	close_yesterday: out["close_yesterday"].(string),
-				// 	currency:        out["currency"].(string),
-				// 	market_cap:      out["market_cap"].(string),
-				// 	volume:          out["volume"].(string),
-				// 	timezone:        out["timezone"].(string),
-				// 	timezone_name:   out["timezone_name"].(string),
-				// 	gmt_offset:      out["gmt_offset"].(string),
-				// 	last_trade_time: out["last_trade_time"].(string),
-				// }
 
-				// respOut = u.(map[string]interface{})
-
-				internalData := internalResp{
-					symbol:          out["symbol"].(string),
-					name:            out["name"].(string),
-					price:           out["price"].(string),
-					close_yesterday: out["close_yesterday"].(string),
-					currency:        out["currency"].(string),
-					market_cap:      out["market_cap"].(string),
-					volume:          out["volume"].(string),
-					timezone:        out["timezone"].(string),
-					timezone_name:   out["timezone_name"].(string),
-					gmt_offset:      out["gmt_offset"].(string),
-					last_trade_time: out["last_trade_time"].(string),
+				requiredFieldsMap := make(map[string]interface{})
+				for _, prop := range jsonResponseFields {
+					requiredFieldsMap[prop] = out[prop]
 				}
-				respOut.data = map[string]internalResp{
-					exchangeName: internalData,
+
+				exchangeName := out["stock_exchange_short"].(string)
+				respOut = map[string]map[string]interface{}{
+					exchangeName: requiredFieldsMap,
 				}
 			}
 		}
 	}
+	return respOut
+}
 
-	fmt.Println("respOut:", respOut.data)
-	respData, err := json.Marshal(respOut.data)
+func encodeMapData(respOut map[string]map[string]interface{}) []byte {
+	respData, err := json.Marshal(respOut)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
-	fmt.Println("respData:", string(respData))
 	return respData
+}
+
+func main() {
+	mux := mux.NewRouter()
+	mux.HandleFunc("/stock/{symbol}", stockExchngHndlr).Methods("GET")
+	mux.HandleFunc("/stock/{symbol}", stockExchngHndlr).Queries("stock_exchange", "{AMEX}").Methods("GET")
+	log.Fatal(http.ListenAndServe(":8000", mux))
 }
